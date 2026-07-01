@@ -24,11 +24,11 @@
 namespace fastant {
 namespace detail {
 
-/// @brief Fallback clock using `std::chrono::system_clock` nanosecond
+/// @brief Fallback clock using `std::chrono::steady_clock` nanosecond
 /// timestamp.
 /// @return Number of nanoseconds since Unix epoch, clamped to 0.
 inline uint64_t current_cycle_fallback() noexcept {
-  auto dur = std::chrono::system_clock::now().time_since_epoch();
+  auto dur = std::chrono::steady_clock::now().time_since_epoch();
   auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(dur).count();
   return ns > 0 ? static_cast<uint64_t>(ns) : 0;  ///< unwrap_or(0)
 }
