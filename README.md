@@ -22,7 +22,7 @@ This is a C++23 port of the Rust [`fastant`](https://github.com/fast/fastant) cr
 | Platform | Timer | Accuracy |
 |---|---|---|
 | Linux x86 / x86-64 | Time Stamp Counter (TSC) | ~0.3 ns resolution |
-| Other platforms | `std::chrono::system_clock` | OS-dependent (~ns) |
+| Other platforms | `std::chrono::steady_clock` | OS-dependent (~ns) |
 
 TSC calibration runs automatically at process startup (`__attribute__((constructor))`).
 When TSC is unavailable, the library falls back silently.
@@ -127,5 +127,5 @@ The library relies on the hardware's invariant TSC feature
 (CPUID 0x80000007 EDX[8]) to ensure cross-core consistency.
 
 On non-TSC platforms, the library falls back to
-`std::chrono::system_clock::now()` nanoseconds.
+`std::chrono::steady_clock::now()` nanoseconds.
 
