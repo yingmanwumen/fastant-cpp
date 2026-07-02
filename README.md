@@ -15,7 +15,7 @@ This is a C++23 port of the Rust [`fastant`](https://github.com/fast/fastant) cr
 - **Accurate** — nanosecond precision with TSC frequency calibration
 - **Drop-in** — API mirrors `std::chrono` conventions: `elapsed()`, `duration_since()`, arithmetic operators, hashing
 - **Header-only** — single `#include "fastant/fastant.hpp"`, no linking required
-- **Portable** — falls back to `std::chrono::system_clock` on non-TSC platforms
+- **Portable** — falls back to `std::chrono::steady_clock` on non-TSC platforms
 
 ## Platform Support
 
