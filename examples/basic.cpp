@@ -1,5 +1,5 @@
 /// @file
-/// Basic Usage of fastant::Instant.
+/// Basic Usage of fastant::static_clock::Instant.
 ///
 /// Demonstrates the core API: now(), elapsed(), duration arithmetic,
 /// comparison operators, and the ZERO constant.
@@ -12,7 +12,7 @@
 
 int main() {
   // Capture the current instant.
-  auto start = fastant::Instant::now();
+  auto start = fastant::static_clock::Instant::now();
 
   // Simulate some work.
   std::this_thread::sleep_for(std::chrono::milliseconds(150));
@@ -25,8 +25,8 @@ int main() {
       << " ms)" << std::endl;
 
   // Compare two instants.
-  auto t1 = fastant::Instant::now();
-  auto t2 = fastant::Instant::now();
+  auto t1 = fastant::static_clock::Instant::now();
+  auto t2 = fastant::static_clock::Instant::now();
   if (t2 > t1) {
     std::cout << "t2 > t1: monotonic clock works correctly." << std::endl;
   }
@@ -39,7 +39,7 @@ int main() {
   // ZERO constant.
   std::cout
       << "ZERO duration_since ZERO = "
-      << fastant::Instant::ZERO.duration_since(fastant::Instant::ZERO).count()
+      << fastant::static_clock::Instant::ZERO.duration_since(fastant::static_clock::Instant::ZERO).count()
       << " ns" << std::endl;
 
   // Check if TSC is available.
@@ -47,12 +47,12 @@ int main() {
             << std::endl;
 
   auto start_chrono = std::chrono::steady_clock::now();
-  auto start_fastant = fastant::Instant::now();
+  auto start_fastant = fastant::static_clock::Instant::now();
 
   std::this_thread::sleep_for(std::chrono::seconds(1));
 
   auto end_chrono = std::chrono::steady_clock::now();
-  auto end_fastant = fastant::Instant::now();
+  auto end_fastant = fastant::static_clock::Instant::now();
 
   auto duration_chrono = std::chrono::duration_cast<std::chrono::nanoseconds>(
       end_chrono - start_chrono);
@@ -63,6 +63,23 @@ int main() {
             << duration_fastant.count() << " ns measured by fastant, diff: "
             << duration_fastant.count() - duration_chrono.count() << " ns."
             << std::endl;
+
+  // ── Online RDTSC backend (JaneStreet-style, ~7 ns) ──
+  std::cout << "\n--- Online backend ---\n";
+  auto online_start = fastant::online::Instant::now();
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  auto online_elapsed = online_start.elapsed();
+  std::cout << "Online elapsed: " << online_elapsed.count() << " ns\n";
+
+  // online::Anchor + as_unix_nanos
+  auto online_anchor = fastant::online::Anchor::new_anchor();
+  auto online_now = fastant::online::Instant::now();
+  auto online_unix = online_now.as_unix_nanos(online_anchor);
+  std::cout << "Online unix timestamp: " << online_unix << " ns\n";
+
+  // online::nanos_per_cycle (dynamic EWMA)
+  std::cout << "Online nanos_per_cycle: " << fastant::detail::online::nanos_per_cycle()
+            << "\n";
 
   return 0;
 }

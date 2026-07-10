@@ -1,131 +1,181 @@
-# fastant
+# fastant-cpp
 
-A drop-in replacement for `std::chrono::steady_clock` that measures time with
-high performance and high accuracy powered by the
-[Time Stamp Counter (TSC)](https://en.wikipedia.org/wiki/Time_Stamp_Counter).
+A C++23 header-only timing library powered by the x86 Time Stamp Counter (TSC),
+delivering ~2.5× faster `now()` than `std::chrono::steady_clock` with nanosecond
+precision and sub-ppm long-term accuracy.
 
-This is a C++23 port of the Rust [`fastant`](https://github.com/fast/fastant) crate
-(originally part of [TiKV](https://github.com/tikv/tikv)).
+This is a port of the Rust [fastant](https://github.com/fast/fastant) crate
+(originally developed for [TiKV](https://github.com/tikv/tikv)), extended with
+an online-calibrated backend inspired by
+[JaneStreet's `time_stamp_counter`](https://github.com/janestreet/time_stamp_counter).
 
-[![C++23](https://img.shields.io/badge/C%2B%2B-23-blue)](https://en.cppreference.com/w/cpp/23)
+## How It Works
 
-## Features
+On x86 Linux, the library reads the CPU's invariant TSC via the `RDTSC`
+instruction — a single-cycle operation returning a 64-bit hardware counter that
+ticks at a fixed frequency regardless of DVFS or C-states. The invariant TSC
+guarantee is verified via CPUID leaf 0x80000007 EDX[8]; as an additional safety
+check the kernel's current clocksource is probed via `/sys`.
 
-- **Fast** — TSC-backed `Instant::now()` takes ~7.5 ns vs ~19 ns for `std::chrono::steady_clock::now()` (x86-64 Linux, ~2.5× speedup)
-- **Accurate** — nanosecond precision with TSC frequency calibration
-- **Drop-in** — API mirrors `std::chrono` conventions: `elapsed()`, `duration_since()`, arithmetic operators, hashing
-- **Header-only** — single `#include "fastant/fastant.hpp"`, no linking required
-- **Portable** — falls back to `std::chrono::steady_clock` on non-TSC platforms
+TSC cycles are converted to nanoseconds using a calibrated conversion factor
+`nanos_per_cycle = 1e9 / cycles_per_second`. The library exposes two backends
+that differ only in **how** this factor is obtained. On non-x86 platforms, both
+backends silently fall back to `std::chrono::steady_clock`.
 
-## Platform Support
+## Backends
 
-| Platform | Timer | Accuracy |
+| Property | `static_clock` (default) | `online` |
 |---|---|---|
-| Linux x86 / x86-64 | Time Stamp Counter (TSC) | ~0.3 ns resolution |
-| Other platforms | `std::chrono::steady_clock` | OS-dependent (~ns) |
+| Calibration | Once at startup, converges to 0.001% | Continuous EWMA, ~1 Hz |
+| TSC serialization | `_mm_lfence()` | None (compiler barrier only) |
+| Latency (hot path) | ~7.6 ns, zero branches | ~7.0 ns, one branch + rare CAS |
+| Latency jitter | None | Occasional ~1 µs spike on calibration |
+| `now()` cost | `rdtsc - anchor` | `rdtsc - anchor` + cal check |
+| Long-term drift | ±0.15 ppm (100 ms cal window) | ±0.15 ppm (convergent) |
 
-TSC calibration runs automatically at process startup (`__attribute__((constructor))`).
-When TSC is unavailable, the library falls back silently.
+**`static_clock` (recommended)** — calibrates once before `main()` by measuring
+TSC increments against `steady_clock` over repeated 100 ms windows until the
+estimated frequency converges to within 10 ppm. A `_mm_lfence()` fence ensures
+accurate ordering between the clock read and `RDTSC`. Once calibrated,
+`current_cycle()` is a single subtraction with no branches or atomic operations,
+providing consistent low-latency timestamps.
+
+**`online`** — skips the `_mm_lfence()` fence and instead calibrates
+continuously using an exponentially weighted moving average (EWMA) linear
+regression. Every ~1 second, `current_cycle()` feeds a new `(time, tsc)` sample
+into the calibrator via a lock-free CAS. Over time this converges to the same
+frequency as `static_clock`, with the benefit of automatically adapting to any
+frequency drift, at the cost of occasional calibration-induced latency spikes.
 
 ## Quick Start
 
 ```cpp
 #include "fastant/fastant.hpp"
+#include <chrono>
 #include <iostream>
 #include <thread>
 
 int main() {
-    auto start = fastant::Instant::now();
+    // Use the default backend (static calibration, _mm_lfence)
+    auto start = fastant::static_clock::Instant::now();
+
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
     auto elapsed = start.elapsed();
-    std::cout << "Elapsed: " << elapsed.count() << " ns" << std::endl;
+    std::cout << "Elapsed: " << elapsed.count() << " ns\n";
+
+    // Check TSC availability
+    std::cout << "TSC available: "
+              << (fastant::is_tsc_available() ? "yes" : "no") << "\n";
 }
 ```
 
-## API Overview
+## API
 
-### `fastant::Instant`
+All types are in the `fastant::static_clock` and `fastant::online` namespaces.
+`fastant::static_clock` is the recommended default.
+
+### `Instant`
+
+A point in time measured by the TSC cycle counter.
 
 | Method | Description |
 |---|---|
 | `Instant::now()` | Capture the current instant |
-| `elapsed()` → `nanoseconds` | Time since creation |
-| `duration_since(earlier)` → `nanoseconds` | Duration between two instants (saturating) |
-| `checked_duration_since(earlier)` → `optional<nanoseconds>` | Checked duration (nullopt if earlier is later) |
-| `checked_add(duration)` → `optional<Instant>` | Checked addition (nullopt on overflow) |
-| `checked_sub(duration)` → `optional<Instant>` | Checked subtraction (nullopt on underflow) |
+| `elapsed()` → `std::chrono::nanoseconds` | Time elapsed since creation |
+| `duration_since(earlier)` → `nanoseconds` | Saturating duration between two instants |
+| `checked_duration_since(earlier)` → `optional<nanoseconds>` | Checked duration (nullopt if earlier later) |
+| `checked_add(duration)` → `optional<Instant>` | Addition with overflow check |
+| `checked_sub(duration)` → `optional<Instant>` | Subtraction with underflow check |
 | `as_unix_nanos(anchor)` → `uint64_t` | Convert to Unix nanosecond timestamp |
 | `operator<=>` | Three-way comparison |
-| `operator+` / `operator-` | Arithmetic (aborts on overflow) |
-| `ZERO` | Zero constant |
+| `operator+` / `operator-` (duration) | Arithmetic (aborts on overflow) |
+| `operator-` (Instant) | Instant difference → nanoseconds (saturating) |
+| `Instant::ZERO` | Zero-valued constant |
 
-### `fastant::Anchor`
+### `Anchor`
 
 | Method | Description |
 |---|---|
-| `Anchor::new_anchor()` | Capture wall-clock time + cycle counter |
+| `Anchor::new_anchor()` | Pair `system_clock::now()` timestamp with current TSC cycle |
 
-### `fastant::AtomicInstant`
+### `AtomicInstant`
 
-Thread-safe atomic wrapper around `Instant`. Methods: `load`, `store`, `swap`, `fetch_max`, `fetch_min`, `into_instant`.
+Lock-free atomic wrapper around `Instant`. Supports `load`, `store`, `swap`,
+`fetch_max`, `fetch_min`, `into_instant`. Memory-order aware with validation.
 
 ### Free Functions
 
 | Function | Description |
 |---|---|
-| `fastant::is_tsc_available()` | Check if TSC acceleration is active |
+| `fastant::is_tsc_available()` | Whether TSC acceleration is active (static_clock backend status) |
+
+## Platform Support
+
+| Platform | Timer | Resolution |
+|---|---|---|
+| Linux x86-64 | Time Stamp Counter (TSC) | ~0.26 ns / cycle |
+| Other platforms | `std::chrono::steady_clock` | OS-dependent (~ns) |
+
+## Requirements
+
+- **C++23** compiler (GCC ≥ 14, Clang ≥ 19)
+- **CMake** ≥ 3.21
+- x86-64 CPU with invariant TSC for hardware acceleration (falls back gracefully otherwise)
 
 ## Building
 
 ```bash
 # Header-only — just add the include path
-cmake -B build
-cmake --build build
+cmake -B build && cmake --build build
 
 # With tests (requires Catch2, fetched automatically)
 cmake -B build -DFASTANT_BUILD_TESTS=ON
-cmake --build build
-ctest --test-dir build
+cmake --build build && ctest --test-dir build
 
 # With benchmarks (requires Google Benchmark, fetched automatically)
 cmake -B build -DFASTANT_BUILD_BENCHMARKS=ON
-cmake --build build
+cmake --build build && ./build/bench/bench_instant
 
 # With examples
 cmake -B build -DFASTANT_BUILD_EXAMPLES=ON
 cmake --build build
-
-# Install
-cmake --install build --prefix /usr/local
 ```
-
-### Requirements
-
-- **C++23** compiler (GCC >= 14, Clang >= 19)
-- **CMake** >= 3.21
 
 ## Performance
 
-Measured on x86-64 Linux (AMD Ryzen, 3.75 GHz):
+Measured on x86-64 Linux (AMD Ryzen, ~3.75 GHz), GCC 14:
 
 ```
-BM_InstantNowFastant         7.6 ns
-BM_InstantNowSteadyClock    18.9 ns
-BM_AnchorNew                23.5 ns
-BM_AsUnixNanos             0.46 ns
+BM_StaticInstantNow       7.6 ns   (static_clock, _mm_lfence + rdtsc)
+BM_OnlineInstantNow       7.0 ns   (online, rdtsc only)
+BM_InstantNowSteadyClock  18.9 ns  (std::chrono::steady_clock)
+BM_AnchorNew              23.5 ns  (system_clock + rdtsc)
 ```
 
-## How It Works
+## Long-Term Drift
 
-On x86 Linux, the library calibrates the TSC frequency by comparing
-`std::chrono::steady_clock` readings against `RDTSC` counts over a 10 ms
-window, converging to within 0.001%. The calibration runs once before
-`main()` via `__attribute__((constructor))`.
+60-second drift test comparing both backends against `std::chrono::steady_clock`
+on x86-64 Linux (100 ms static calibration window):
 
-Once calibrated, `Instant::now()` is a single `RDTSC` instruction (~7.5 ns).
-The library relies on the hardware's invariant TSC feature
-(CPUID 0x80000007 EDX[8]) to ensure cross-core consistency.
+```
+  sec  static(ns)    online(ns)     std(ns)    st_drift      st_ppm    on_drift      on_ppm
+ ----------------------------------------------------------------------------------------------------
+    1     1000209891     1000212496  1000214591       -2546    -2.545459       -2015    -2.014568
+    2     2000630705     2000633048  2000635287       -2318    -1.158633       -2159    -1.079157
+   10    10001926309    10001926558 10001928750        -307    -0.030694       -2111    -0.211059
+   20    20003181085    20003179091 20003181718        1501     0.075038       -2547    -0.127330
+   30    30005909310    30005904199 30005907089        4195     0.139806       -2850    -0.094981
+   40    40007061796    40007055438 40007057135        6264     0.156572       -1646    -0.041143
+   50    50009269680    50009261359 50009263320        7993     0.159830       -1921    -0.038413
+   60    60011988827    60011975624 60011980940        9881     0.164650       -5236    -0.087249
+```
 
-On non-TSC platforms, the library falls back to
-`std::chrono::steady_clock::now()` nanoseconds.
+Static backend drift stabilizes at ±0.16 ppm after the initial convergence
+period (~10 seconds). Online backend maintains comparable accuracy. Both
+converge to the same `nanos_per_cycle` value (~0.263649), confirming they
+estimate the same hardware frequency.
 
+## License
+
+Apache 2.0 — see [LICENSE](./LICENSE)

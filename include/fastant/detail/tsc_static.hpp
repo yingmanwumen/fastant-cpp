@@ -2,20 +2,17 @@
 
 #if defined(__linux__) && (defined(__x86_64__) || defined(__i386__))
 
-#include <cpuid.h>
 #include <x86intrin.h>
 
 #include <atomic>
-#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
-#include <fstream>
-#include <iterator>
-#include <string>
 #include <tuple>
 #include <utility>
+
+#include "tsc_common.hpp"
 
 namespace fastant::detail::tsc_now {
 
@@ -33,56 +30,14 @@ inline TscLevel g_tsc_level{};
 inline double g_nanos_per_cycle = 1.0;
 inline std::atomic<bool> g_initialized{false};
 
-inline bool has_invariant_tsc() {
-  unsigned int eax, ebx, ecx, edx;
-  if (__get_cpuid(0x80000000, &eax, &ebx, &ecx, &edx) == 0) {
-    return false;
-  }
-  if (eax < 0x80000007) {
-    return false;
-  }
-  __get_cpuid(0x80000007, &eax, &ebx, &ecx, &edx);
-  return (edx & (1u << 8)) != 0;
-}
-
-inline bool clock_source_has_tsc() {
-  {
-    std::ifstream file(
-        "/sys/devices/system/clocksource/clocksource0/current_clocksource");
-    if (file.is_open()) {
-      std::string content((std::istreambuf_iterator<char>(file)),
-                          std::istreambuf_iterator<char>());
-      if (content.find("tsc") != std::string::npos) {
-        return true;
-      }
-      return false;
-    }
-    if (errno != ENOENT) {
-      return false;
-    }
-  }
-  {
-    std::ifstream avail(
-        "/sys/devices/system/clocksource/clocksource0/available_clocksource");
-    if (avail.is_open()) {
-      std::string content((std::istreambuf_iterator<char>(avail)),
-                          std::istreambuf_iterator<char>());
-      return content.find("tsc") != std::string::npos;
-    }
-  }
-  return false;
-}
-
-inline bool is_tsc_stable() {
-  return has_invariant_tsc() || clock_source_has_tsc();
-}
-
 inline std::pair<std::chrono::steady_clock::time_point, uint64_t>
 monotonic_with_tsc() {
   auto t = std::chrono::steady_clock::now();
 #ifdef __SSE2__
   _mm_lfence();
 #else
+  // compiler barrier only — SSE2 is mandatory on x86-64, this branch exists
+  // solely to keep the i386 path compiling.
   std::atomic_signal_fence(std::memory_order_seq_cst);
 #endif
   return {t, __rdtsc()};
@@ -104,7 +59,7 @@ _cycles_per_sec() {
       last_tsc = tsc2;
       auto elapsed_nanos =
           std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count();
-      if (elapsed_nanos > 10'000'000) {
+      if (elapsed_nanos > 100'000'000) {
         if (tsc2 < tsc1) {
           inner_retry = true;
           break;
@@ -141,7 +96,7 @@ inline std::pair<uint64_t, uint64_t> cycles_per_sec(
 }
 
 inline TscLevel TscLevel::get() {
-  if (!is_tsc_stable()) {
+  if (!tsc_common::is_tsc_stable()) {
     return TscLevel{};
   }
   auto anchor = std::chrono::steady_clock::now();

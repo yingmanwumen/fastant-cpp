@@ -11,16 +11,16 @@
 
 int main() {
   // Create an anchor — records both wall-clock time and cycle counter.
-  auto anchor = fastant::Anchor::new_anchor();
+  auto anchor = fastant::static_clock::Anchor::new_anchor();
 
-  // Convert the anchor to a Unix nanosecond timestamp using itself as
-  // reference.
-  auto anchor_now = fastant::Instant::now().as_unix_nanos(anchor);
+  // Capture the current instant and convert to Unix nanos using the
+  // anchor as reference.
+  auto anchor_now = fastant::static_clock::Instant::now().as_unix_nanos(anchor);
   std::cout << "Anchor created at Unix nanos: " << anchor_now << std::endl;
 
   // Wait a bit, then capture another instant.
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  auto now = fastant::Instant::now();
+  auto now = fastant::static_clock::Instant::now();
 
   // Convert the cycle-based instant to a Unix nanosecond timestamp.
   auto unix_nanos = now.as_unix_nanos(anchor);
@@ -34,9 +34,9 @@ int main() {
   }
 
   // Reuse the anchor for multiple conversions.
-  auto t1 = fastant::Instant::now();
+  auto t1 = fastant::static_clock::Instant::now();
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  auto t2 = fastant::Instant::now();
+  auto t2 = fastant::static_clock::Instant::now();
 
   std::cout << "t1 = " << t1.as_unix_nanos(anchor) << std::endl;
   std::cout << "t2 = " << t2.as_unix_nanos(anchor) << std::endl;

@@ -2,14 +2,23 @@
 
 #include "fastant/fastant.hpp"
 
-// Benchmark 1: Instant::now() — fastant vs std::steady_clock
-static void BM_InstantNowFastant(benchmark::State& state) {
+// Benchmark 1: Instant::now() — static vs online vs std::steady_clock
+static void BM_StaticInstantNow(benchmark::State& state) {
   for (auto _ : state) {
-    auto t = fastant::Instant::now();
+    auto t = fastant::static_clock::Instant::now();
     benchmark::DoNotOptimize(t);
   }
 }
-BENCHMARK(BM_InstantNowFastant);
+BENCHMARK(BM_StaticInstantNow);
+
+// Online RDTSC backend
+static void BM_OnlineInstantNow(benchmark::State& state) {
+  for (auto _ : state) {
+    auto t = fastant::online::Instant::now();
+    benchmark::DoNotOptimize(t);
+  }
+}
+BENCHMARK(BM_OnlineInstantNow);
 
 static void BM_InstantNowSteadyClock(benchmark::State& state) {
   for (auto _ : state) {
@@ -22,21 +31,10 @@ BENCHMARK(BM_InstantNowSteadyClock);
 // Benchmark 2: Anchor::new()
 static void BM_AnchorNew(benchmark::State& state) {
   for (auto _ : state) {
-    auto a = fastant::Anchor::new_anchor();
+    auto a = fastant::static_clock::Anchor::new_anchor();
     benchmark::DoNotOptimize(a);
   }
 }
 BENCHMARK(BM_AnchorNew);
-
-// Benchmark 3: as_unix_nanos
-static void BM_AsUnixNanos(benchmark::State& state) {
-  auto anchor = fastant::Anchor::new_anchor();
-  auto instant = fastant::Instant::now();
-  for (auto _ : state) {
-    auto ns = instant.as_unix_nanos(anchor);
-    benchmark::DoNotOptimize(ns);
-  }
-}
-BENCHMARK(BM_AsUnixNanos);
 
 BENCHMARK_MAIN();
