@@ -160,12 +160,6 @@ on x86-64 Linux (100 ms static calibration window):
 
 ![Long-term drift chart](assets/longterm_drift.png)
 
-Full data available in [`longterm.txt`](longterm.txt). Both backends converge
-to the same `nanos_per_cycle` value (~0.263649), confirming they estimate the
-same hardware frequency. The `static_clock` backend stabilizes at ±0.15 ppm
-after initial convergence, while `online` tracks the same frequency with
-occasional calibration-induced jitter.
-
 ## License
 
 Apache 2.0 — see [LICENSE](./LICENSE)
