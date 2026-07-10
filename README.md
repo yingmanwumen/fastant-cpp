@@ -155,26 +155,16 @@ BM_AnchorNew              23.5 ns  (system_clock + rdtsc)
 
 ## Long-Term Drift
 
-60-second drift test comparing both backends against `std::chrono::steady_clock`
+337-second drift test comparing both backends against `std::chrono::steady_clock`
 on x86-64 Linux (100 ms static calibration window):
 
-```
-  sec  static(ns)    online(ns)     std(ns)    st_drift      st_ppm    on_drift      on_ppm
- ----------------------------------------------------------------------------------------------------
-    1     1000209891     1000212496  1000214591       -2546    -2.545459       -2015    -2.014568
-    2     2000630705     2000633048  2000635287       -2318    -1.158633       -2159    -1.079157
-   10    10001926309    10001926558 10001928750        -307    -0.030694       -2111    -0.211059
-   20    20003181085    20003179091 20003181718        1501     0.075038       -2547    -0.127330
-   30    30005909310    30005904199 30005907089        4195     0.139806       -2850    -0.094981
-   40    40007061796    40007055438 40007057135        6264     0.156572       -1646    -0.041143
-   50    50009269680    50009261359 50009263320        7993     0.159830       -1921    -0.038413
-   60    60011988827    60011975624 60011980940        9881     0.164650       -5236    -0.087249
-```
+![Long-term drift chart](assets/longterm_drift.png)
 
-Static backend drift stabilizes at ±0.16 ppm after the initial convergence
-period (~10 seconds). Online backend maintains comparable accuracy. Both
-converge to the same `nanos_per_cycle` value (~0.263649), confirming they
-estimate the same hardware frequency.
+Full data available in [`longterm.txt`](longterm.txt). Both backends converge
+to the same `nanos_per_cycle` value (~0.263649), confirming they estimate the
+same hardware frequency. The `static_clock` backend stabilizes at ±0.15 ppm
+after initial convergence, while `online` tracks the same frequency with
+occasional calibration-induced jitter.
 
 ## License
 
