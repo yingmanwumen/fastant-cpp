@@ -1,8 +1,8 @@
 # fastant-cpp
 
-A C++23 header-only timing library powered by the x86 Time Stamp Counter (TSC),
-delivering ~2.5× faster `now()` than `std::chrono::steady_clock` with nanosecond
-precision and sub-ppm long-term accuracy.
+A C++23 header-only timing library for low-overhead, monotonic time sampling.
+The accelerated path is conditional on the platform and runtime checks described
+below; otherwise the library uses `std::chrono::steady_clock`.
 
 This is a port of the Rust [fastant](https://github.com/fast/fastant) crate
 (originally developed for [TiKV](https://github.com/tikv/tikv)), extended with
@@ -11,41 +11,56 @@ an online-calibrated backend inspired by
 
 ## How It Works
 
-On x86 Linux, the library reads the CPU's invariant TSC via the `RDTSC`
-instruction — a single-cycle operation returning a 64-bit hardware counter that
-ticks at a fixed frequency regardless of DVFS or C-states. The invariant TSC
-guarantee is verified via CPUID leaf 0x80000007 EDX[8]; as an additional safety
-check the kernel's current clocksource is probed via `/sys`.
+On supported x86 Linux systems, the library may read the CPU's TSC via the
+`RDTSC` instruction. The invariant-TSC CPUID bit and the kernel's current
+clocksource from `/sys` are heuristic eligibility checks, not guarantees of
+consistent behavior across cores, sockets, or virtual machines. If the checks
+do not pass, the library falls back to `std::chrono::steady_clock`.
 
 TSC cycles are converted to nanoseconds using a calibrated conversion factor
 `nanos_per_cycle = 1e9 / cycles_per_second`. The library exposes two backends
-that differ only in **how** this factor is obtained. On non-x86 platforms, both
-backends silently fall back to `std::chrono::steady_clock`.
+with different calibration policies. On unsupported platforms, or when the
+runtime checks reject TSC use, both backends fall back to
+`std::chrono::steady_clock`.
 
 ## Backends
 
 | Property | `static_clock` (default) | `online` |
 |---|---|---|
-| Calibration | Once at startup, converges to 0.001% | Continuous EWMA, ~1 Hz |
-| TSC serialization | `_mm_lfence()` | None (compiler barrier only) |
-| Latency (hot path) | ~7.6 ns, zero branches | ~7.0 ns, one branch + rare CAS |
-| Latency jitter | None | Occasional ~1 µs spike on calibration |
+| Calibration | Once at startup against `steady_clock` | Ongoing EWMA following `steady_clock` |
+| TSC serialization | None on the `now()` hot path | None (compiler barrier only) |
+| Hot-path structure | TSC read and anchor subtraction | TSC read, anchor subtraction, and deadline check |
+| Calibration overhead | Startup only | Low-frequency calibration can add latency |
 | `now()` cost | `rdtsc - anchor` | `rdtsc - anchor` + cal check |
-| Long-term drift | ±0.15 ppm (100 ms cal window) | ±0.15 ppm (convergent) |
+| Time model | Fixed conversion after startup | Current conversion updated over time |
+
+### Algorithm origins and semantics
+
+- **`static_clock`** ports the startup calibration design from Rust
+  [`fastant`](https://github.com/fast/fastant): it measures TSC against a
+  monotonic reference over repeated windows, derives a fixed cycles-to-time
+  conversion and anchors subsequent TSC reads to that calibration.
+- **`online`** is inspired by Jane Street's
+  [`time_stamp_counter`](https://github.com/janestreet/core_unix/blob/master/time_stamp_counter/src/time_stamp_counter.ml).
+  It retains the EWMA regression used to estimate the current TSC-to-time
+  slope from sampled deltas.
+- Jane Street's implementation also has a separate monotonic catch-up mapping
+  to smooth calibration-induced changes. This backend does **not** implement
+  that layer: it publishes the current EWMA slope directly. Consequently,
+  recalibration can change the conversion applied to historical `Instant`
+  values; use `static_clock` when that semantic is unsuitable.
 
 **`static_clock` (recommended)** — calibrates once before `main()` by measuring
-TSC increments against `steady_clock` over repeated 100 ms windows until the
-estimated frequency converges to within 10 ppm. A `_mm_lfence()` fence ensures
-accurate ordering between the clock read and `RDTSC`. Once calibrated,
-`current_cycle()` is a single subtraction with no branches or atomic operations,
-providing consistent low-latency timestamps.
+TSC increments against `steady_clock`. Its `now()` hot path issues `RDTSC`
+without a hardware serialization fence and then applies the startup conversion.
 
-**`online`** — skips the `_mm_lfence()` fence and instead calibrates
-continuously using an exponentially weighted moving average (EWMA) linear
-regression. Every ~1 second, `current_cycle()` feeds a new `(time, tsc)` sample
-into the calibrator via a lock-free CAS. Over time this converges to the same
-frequency as `static_clock`, with the benefit of automatically adapting to any
-frequency drift, at the cost of occasional calibration-induced latency spikes.
+**`online`** — calibrates continuously using an exponentially weighted moving
+average (EWMA) linear regression that follows `steady_clock`'s observed
+conversion. It does not issue a hardware serialization instruction around
+`RDTSC`; its compiler barrier alone does not prevent CPU execution reordering.
+Low-frequency recalibration can add latency. Because its conversion changes,
+durations computed from historical `Instant` values may differ after a
+calibration update; it is not an independent or absolute clock.
 
 ## Quick Start
 
@@ -56,7 +71,7 @@ frequency drift, at the cost of occasional calibration-induced latency spikes.
 #include <thread>
 
 int main() {
-    // Use the default backend (static calibration, _mm_lfence)
+    // Use the default backend (startup calibration)
     auto start = fastant::static_clock::Instant::now();
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -77,7 +92,7 @@ All types are in the `fastant::static_clock` and `fastant::online` namespaces.
 
 ### `Instant`
 
-A point in time measured by the TSC cycle counter.
+A point in time represented by the selected backend's cycle or timestamp value.
 
 | Method | Description |
 |---|---|
@@ -101,7 +116,7 @@ A point in time measured by the TSC cycle counter.
 
 ### `AtomicInstant`
 
-Lock-free atomic wrapper around `Instant`. Supports `load`, `store`, `swap`,
+Atomic wrapper around `Instant`. Supports `load`, `store`, `swap`,
 `fetch_max`, `fetch_min`, `into_instant`. Memory-order aware with validation.
 
 ### Free Functions
@@ -112,10 +127,14 @@ Lock-free atomic wrapper around `Instant`. Supports `load`, `store`, `swap`,
 
 ## Platform Support
 
-| Platform | Timer | Resolution |
+| Platform | Timer | Cycle granularity |
 |---|---|---|
-| Linux x86-64 | Time Stamp Counter (TSC) | ~0.26 ns / cycle |
+| Supported x86 Linux | Time Stamp Counter (TSC) | Typical cycle value depends on the CPU; not a timestamp-accuracy guarantee |
 | Other platforms | `std::chrono::steady_clock` | OS-dependent (~ns) |
+
+TSC timestamps are sampled without a hardware serialization guarantee, so an
+individual sampling point may not correspond exactly to the surrounding
+instructions' execution point.
 
 ## Requirements
 
@@ -144,10 +163,12 @@ cmake --build build
 
 ## Performance
 
-Measured on x86-64 Linux (AMD Ryzen, ~3.75 GHz), GCC 14:
+The following are results from one benchmark run on one x86-64 Linux machine
+(AMD Ryzen, approximately 3.75 GHz, GCC 14). They are illustrative only and
+must not be generalized to other machines, compilers, or build settings:
 
 ```
-BM_StaticInstantNow       7.6 ns   (static_clock, _mm_lfence + rdtsc)
+BM_StaticInstantNow       7.6 ns   (static_clock, rdtsc - anchor, no hardware fence)
 BM_OnlineInstantNow       7.0 ns   (online, rdtsc only)
 BM_InstantNowSteadyClock  18.9 ns  (std::chrono::steady_clock)
 BM_AnchorNew              23.5 ns  (system_clock + rdtsc)
@@ -155,8 +176,9 @@ BM_AnchorNew              23.5 ns  (system_clock + rdtsc)
 
 ## Long-Term Drift
 
-337-second drift test comparing both backends against `std::chrono::steady_clock`
-on x86-64 Linux (100 ms static calibration window):
+This is a local consistency observation: both backends are calibrated against
+and compared with `std::chrono::steady_clock` on the same machine. Each
+backend's measurement uses its corresponding steady-clock endpoint:
 
 ![Long-term drift chart](assets/longterm_drift.png)
 

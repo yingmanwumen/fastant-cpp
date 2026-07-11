@@ -21,6 +21,7 @@ void handle_signal(int /* sig */) { running.store(false); }
 
 struct Backend {
   uint64_t elapsed_ns;
+  uint64_t std_elapsed_ns;
   int64_t drift_ns;
   double drift_ppm;
 };
@@ -29,8 +30,8 @@ template <typename InstantType>
 Backend measure(InstantType start,
                 std::chrono::steady_clock::time_point start_std) {
   using namespace std::chrono;
-  auto now_inst = InstantType::now();
   auto now_std = steady_clock::now();
+  auto now_inst = InstantType::now();
 
   auto elapsed = now_inst - start;
   auto elapsed_ns = duration_cast<nanoseconds>(elapsed).count();
@@ -44,7 +45,8 @@ Backend measure(InstantType start,
                 1'000'000.0
           : 0.0;
 
-  return {static_cast<uint64_t>(elapsed_ns), drift, ppm};
+  return {static_cast<uint64_t>(elapsed_ns),
+          static_cast<uint64_t>(elapsed_std_ns), drift, ppm};
 }
 
 }  // namespace
@@ -53,21 +55,23 @@ int main() {
   std::signal(SIGINT, handle_signal);
   std::signal(SIGTERM, handle_signal);
 
-  auto start_std = std::chrono::steady_clock::now();
+  auto start_static_std = std::chrono::steady_clock::now();
   auto start_static = fastant::static_clock::Instant::now();
+  auto start_online_std = std::chrono::steady_clock::now();
   auto start_online = fastant::online::Instant::now();
 
   std::cout << "Long-term drift test started. Press Ctrl+C to stop.\n"
             << "TSC available: " << std::boolalpha
             << fastant::is_tsc_available() << "\n\n";
 
-  // header
-  std::cout << std::setw(8) << "sec" << std::setw(16) << "static(ns)"
-            << std::setw(16) << "online(ns)" << std::setw(12) << "std(ns)"
-            << std::setw(12) << "st_drift" << std::setw(12) << "st_ppm"
-            << std::setw(12) << "on_drift" << std::setw(12) << "on_ppm"
-            << "\n"
-            << std::string(8 + 16 + 16 + 12 + 12 + 12 + 12 + 12, '-') << "\n";
+  std::cout << std::setw(8) << "sec" << ' ' << std::setw(16) << "static(ns)"
+            << ' ' << std::setw(16) << "online(ns)" << ' ' << std::setw(12)
+            << "st_std(ns)" << ' ' << std::setw(12) << "on_std(ns)" << ' '
+            << std::setw(12) << "st_drift" << ' ' << std::setw(12) << "st_ppm"
+            << ' ' << std::setw(12) << "on_drift" << ' ' << std::setw(12)
+            << "on_ppm" << "\n"
+            << std::string(8 + 16 + 16 + 12 + 12 + 12 + 12 + 12 + 12 + 8, '-')
+            << "\n";
 
   uint64_t second = 0;
   while (running.load()) {
@@ -75,21 +79,17 @@ int main() {
     if (!running.load()) break;
     ++second;
 
-    auto st = measure<fastant::static_clock::Instant>(start_static, start_std);
-    auto on = measure<fastant::online::Instant>(start_online, start_std);
+    auto st =
+        measure<fastant::static_clock::Instant>(start_static, start_static_std);
+    auto on = measure<fastant::online::Instant>(start_online, start_online_std);
 
-    auto now_std = std::chrono::steady_clock::now();
-    auto elapsed_std_ns = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(now_std -
-                                                             start_std)
-            .count());
-
-    std::cout << std::setw(8) << second << std::setw(16) << st.elapsed_ns
-              << std::setw(16) << on.elapsed_ns << std::setw(12)
-              << elapsed_std_ns << std::setw(12) << st.drift_ns << std::setw(12)
-              << std::fixed << std::setprecision(6) << st.drift_ppm
-              << std::setw(12) << on.drift_ns << std::setw(12) << std::fixed
-              << std::setprecision(6) << on.drift_ppm << "\n";
+    std::cout << std::setw(8) << second << ' ' << std::setw(16) << st.elapsed_ns
+              << ' ' << std::setw(16) << on.elapsed_ns << ' ' << std::setw(12)
+              << st.std_elapsed_ns << ' ' << std::setw(12) << on.std_elapsed_ns
+              << ' ' << std::setw(12) << st.drift_ns << ' ' << std::setw(12)
+              << std::fixed << std::setprecision(6) << st.drift_ppm << ' '
+              << std::setw(12) << on.drift_ns << ' ' << std::setw(12) << std::fixed
+              << std::setprecision(6) << on.drift_ppm << std::endl;
   }
 
   std::cout << "\nStopped after " << std::setprecision(24) << second
@@ -97,6 +97,6 @@ int main() {
             << "static nanos_per_cycle: " << fastant::detail::nanos_per_cycle()
             << "\n"
             << "online   nanos_per_cycle: "
-            << fastant::detail::online::nanos_per_cycle() << "\n";
+            << fastant::detail::online::nanos_per_cycle() << std::endl;
   return 0;
 }

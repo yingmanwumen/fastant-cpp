@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <random>
@@ -68,12 +69,25 @@ TEST_CASE("duration") {
 // online backend tests
 // =========================================================================
 
+#if defined(__linux__) && (defined(__x86_64__) || defined(__i386__))
+TEST_CASE("online_calibrator_requires_nonzero_samples") {
+  fastant::detail::online::EwmaCalibrator calibrator;
+  calibrator.reset(1'000, 1.0);
+  REQUIRE_FALSE(calibrator.calibrate(1'000, 1.0, true));
+  REQUIRE(calibrator.sec_per_cycle() == 0.0);
+  REQUIRE(calibrator.calibrate(1'000'000'000, 2.0, true));
+  REQUIRE(std::isfinite(calibrator.sec_per_cycle()));
+  REQUIRE(calibrator.sec_per_cycle() > 0.0);
+}
+#endif
+
 TEST_CASE("online_is_tsc_available") {
   auto _ = fastant::detail::online::is_tsc_available();
   REQUIRE(true);
 }
 
 TEST_CASE("online_monotonic") {
+  if (!fastant::detail::online::is_tsc_available()) return;
   uint64_t prev = 0;
   for (int i = 0; i < 10000; ++i) {
     uint64_t cur = fastant::detail::online::current_cycle();
@@ -83,9 +97,18 @@ TEST_CASE("online_monotonic") {
 }
 
 TEST_CASE("online_nanos_per_cycle") {
+  if (!fastant::detail::online::is_tsc_available()) return;
   auto _ = fastant::online::Instant::now();
   auto npc = fastant::detail::online::nanos_per_cycle();
   REQUIRE(npc > 0.0);
+}
+
+TEST_CASE("online_backend_fallback_units") {
+  const auto npc = fastant::detail::OnlineBackend::nanos_per_cycle();
+  if (fastant::detail::online::is_tsc_available())
+    REQUIRE(npc > 0.0);
+  else
+    REQUIRE(npc == 1.0);
 }
 
 TEST_CASE("online_unix_time") {
@@ -145,6 +168,7 @@ TEST_CASE("online_concurrent") {
 TEST_CASE("online_recalibrate") {
   // Smoke test: recalibrate() should not crash and should leave
   // nanos_per_cycle >= 0.
+  if (!fastant::detail::online::is_tsc_available()) return;
   auto _ = fastant::online::Instant::now();
   fastant::detail::online::recalibrate();
   REQUIRE(fastant::detail::online::nanos_per_cycle() > 0.0);
@@ -197,6 +221,27 @@ TEST_CASE("atomic_fetch_min") {
   auto old2 = ai.fetch_min(t2);
   REQUIRE(old2 == t1);
   REQUIRE(ai.load() == t1);
+}
+
+TEST_CASE("atomic_fetch_order_mappings") {
+  using Instant = fastant::static_clock::Instant;
+  const auto base = Instant::from_raw(10);
+  const auto high = Instant::from_raw(20);
+  const auto low = Instant::from_raw(5);
+
+  for (const auto order : {std::memory_order_relaxed,
+                           std::memory_order_acquire,
+                           std::memory_order_release,
+                           std::memory_order_acq_rel,
+                           std::memory_order_seq_cst}) {
+    fastant::static_clock::AtomicInstant max_value(base);
+    REQUIRE(max_value.fetch_max(high, order) == base);
+    REQUIRE(max_value.load() == high);
+
+    fastant::static_clock::AtomicInstant min_value(base);
+    REQUIRE(min_value.fetch_min(low, order) == base);
+    REQUIRE(min_value.load() == low);
+  }
 }
 
 TEST_CASE("atomic_into_instant") {

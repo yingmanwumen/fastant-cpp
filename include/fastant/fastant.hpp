@@ -80,6 +80,8 @@ struct OnlineBackend {
   }
   static double nanos_per_cycle() noexcept {
 #ifdef FASTANT_X86_LINUX
+    if (!online::is_tsc_available())
+      return 1.0;
     return online::nanos_per_cycle();
 #else
     return 1.0;
@@ -353,10 +355,11 @@ class AtomicInstant {
   /// @brief Atomically store an Instant.
   /// @param val    Value to store.
   /// @param order  Memory order (default: seq_cst).
-  /// @note Aborts if order is acquire or acq_rel.
+  /// @note Aborts if order is consume, acquire, or acq_rel.
   void store(InstantType val,
              std::memory_order order = std::memory_order_seq_cst) noexcept {
-    if (order == std::memory_order_acquire ||
+    if (order == std::memory_order_consume ||
+        order == std::memory_order_acquire ||
         order == std::memory_order_acq_rel) [[unlikely]]
       std::abort();
     m_value.store(val.m_value, order);
@@ -379,7 +382,7 @@ class AtomicInstant {
     uint64_t old = m_value.load(to_load_order(order));
     while (val.m_value > old) {
       if (m_value.compare_exchange_weak(old, val.m_value, order,
-                                        std::memory_order_relaxed))
+                                        to_load_order(order)))
         return InstantType(old);
     }
     return InstantType(old);
@@ -392,7 +395,7 @@ class AtomicInstant {
     uint64_t old = m_value.load(to_load_order(order));
     while (val.m_value < old) {
       if (m_value.compare_exchange_weak(old, val.m_value, order,
-                                        std::memory_order_relaxed))
+                                        to_load_order(order)))
         return InstantType(old);
     }
     return InstantType(old);
